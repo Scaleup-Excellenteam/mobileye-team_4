@@ -4,10 +4,10 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-from scipy import signal as sg
-from scipy.ndimage import maximum_filter
+import cv2
 from PIL import Image
 import matplotlib.pyplot as plt
+from scipy.ndimage import convolve
 
 # if you wanna iterate over multiple files and json, the default source folder name is this.
 DEFAULT_BASE_DIR: str = 'INSERT_YOUR_DIR_WITH_PNG_AND_JSON_HERE'
@@ -22,66 +22,127 @@ GREEN_X_COORDINATES = List[int]
 GREEN_Y_COORDINATES = List[int]
 
 
-def find_tfl_lights(c_image: np.ndarray,
-                    **kwargs) -> Tuple[RED_X_COORDINATES, RED_Y_COORDINATES, GREEN_X_COORDINATES, GREEN_Y_COORDINATES]:
+def high_pass_filter(image: np.ndarray, kernel_size: int = 3) -> np.ndarray:
     """
-    Detect candidates for TFL lights. Use c_image, kwargs and you imagination to implement.
+    Apply a high-pass filter to the input image to enhance edges and details.
 
-    :param c_image: The image itself as np.uint8, shape of (H, W, 3).
-    :param kwargs: Whatever config you want to pass in here.
-    :return: 4-tuple of x_red, y_red, x_green, y_green.
+    Args:
+        image (np.ndarray): The input image as a NumPy array.
+        kernel_size (int): The size of the filter kernel. (default: 3)
+
+    Returns:
+        np.ndarray: The filtered image.
     """
-    ### WRITE YOUR CODE HERE ###
-    ### USE HELPER FUNCTIONS ###
-    return [500, 700, 900], [500, 550, 600], [600, 800], [400, 300]
+    # Define a kernel for high-pass filtering
+    kernel = np.ones((kernel_size, kernel_size)) * (-1)
+    kernel[int(kernel_size / 2), int(kernel_size / 2)] = (kernel_size ** 2 - kernel_size + 1)
+
+    # Initialize an empty array to store the filtered image
+    filtered_image = np.zeros_like(image)
+
+    # Apply the high-pass filter to each channel of the image
+    for channel in range(image.shape[2]):
+        filtered_image[:, :, channel] = convolve(image[:, :, channel].astype(np.float32), kernel)
+
+    # Clip the values to ensure they are in the valid range [0, 255]
+    filtered_image = np.clip(filtered_image, 0, 255)
+
+    # Exchange the dark and bright parts by subtracting the filtered image from the original image
+    inverted_image = image.astype(np.int16) - filtered_image.astype(np.int16)
+    inverted_image = np.clip(inverted_image, 0, 255)
+
+    return inverted_image.astype(np.uint8)
+
+
+def find_traffic_lights_by_color(c_image: np.ndarray, lower_color: np.ndarray, upper_color: np.ndarray) -> Tuple[
+    List[int], List[int]]:
+    """
+    Detect traffic light candidates of a specific color in the image.
+
+    Args:
+        c_image (np.ndarray): The input image.
+        lower_color (np.ndarray): The lower bound of the color range.
+        upper_color (np.ndarray): The upper bound of the color range.
+
+    Returns:
+        Tuple[List[int], List[int]]: The x and y coordinates of the detected lights.
+    """
+    # Create a mask for the specified color
+    mask = cv2.inRange(c_image, lower_color, upper_color)
+
+    # Find contours in the masked image
+    contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
+
+    # Initialize lists to hold contour coordinates
+    x, y = [], []
+
+    # Append coordinates of each light to the lists
+    for contour in contours:
+        (x_coord, y_coord), radius = cv2.minEnclosingCircle(contour)
+        x.append(int(x_coord))
+        y.append(int(y_coord))
+
+    return x, y
+
+
+def find_tfl_lights(c_image: np.ndarray, **kwargs) -> Tuple[
+    RED_X_COORDINATES, RED_Y_COORDINATES, GREEN_X_COORDINATES, GREEN_Y_COORDINATES]:
+    """
+    Detect candidates for TFL lights.
+
+    Args:
+        c_image (np.ndarray): The image itself as np.uint8, shape of (H, W, 3).
+        kwargs: Whatever config you want to pass in here.
+
+    Returns:
+        4-tuple of x_red, y_red, x_green, y_green.
+    """
+    # Apply high-pass filter
+    c_image = high_pass_filter(c_image)
+
+    # Define color ranges for red and green
+    lower_red = np.array([220, 0, 0])
+    upper_red = np.array([255, 55, 55])
+    lower_green = np.array([0, 200, 0])
+    upper_green = np.array([100, 255, 100])
+
+    # Find red and green traffic light candidates
+    red_x, red_y = find_traffic_lights_by_color(c_image, lower_red, upper_red)
+    green_x, green_y = find_traffic_lights_by_color(c_image, lower_green, upper_green)
+
+    return red_x, red_y, green_x, green_y
 
 
 ### GIVEN CODE TO TEST YOUR IMPLENTATION AND PLOT THE PICTURES
-def show_image_and_gt(c_image: np.ndarray, objects: Optional[List[POLYGON_OBJECT]], fig_num: int = None):
-    # ensure a fresh canvas for plotting the image and objects.
-    plt.figure(fig_num).clf()
-    # displays the input image.
-    plt.imshow(c_image)
+def show_image_and_gt(image, objs, fig_num=None):
+    plt.figure(fig_num)
+    plt.imshow(image)
     labels = set()
-    if objects:
-        for image_object in objects:
-            # Extract the 'polygon' array from the image object
-            poly: np.array = np.array(image_object['polygon'])
-            # Use advanced indexing to create a closed polygon array
-            # The modulo operation ensures that the array is indexed circularly, closing the polygon
-            polygon_array = poly[np.arange(len(poly)) % len(poly)]
-            # gets the x coordinates (first column -> 0) anf y coordinates (second column -> 1)
-            x_coordinates, y_coordinates = polygon_array[:, 0], polygon_array[:, 1]
-            color = 'r'
-            plt.plot(x_coordinates, y_coordinates, color, label=image_object['label'])
-            labels.add(image_object['label'])
-        if 1 < len(labels):
-            # The legend provides a visual representation of the labels associated with the plotted objects.
-            # It helps in distinguishing different objects in the plot based on their labels.
-            plt.legend()
+    if objs is not None:
+        for obj in objs:
+            if obj['label'] == 'traffic light':
+                polygon = np.array(obj['polygon']).reshape((-1, 1, 2))
+                plt.plot(polygon[:, :, 0], polygon[:, :, 1], 'g')
+                labels.add(obj['label'])
+
+        print(f"Figure {fig_num}: {labels}")
 
 
-def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None, fig_num=None):
+def test_find_tfl_lights(image_path, json_path=None, fig_num=None):
     """
     Run the attention code.
     """
-    # using pillow to load the image
-    image: Image = Image.open(image_path)
-    # converting the image to a numpy ndarray array
-    c_image: np.ndarray = np.array(image)
+    image = np.array(Image.open(image_path))
+    if json_path is None:
+        objects = None
+    else:
+        json_data = json.load(open(json_path))
+        objects = json_data['objects']
+    show_image_and_gt(image, objects, fig_num)
 
-    objects = None
-    if image_json_path:
-        image_json = json.load(Path(image_json_path).open())
-        objects: List[POLYGON_OBJECT] = [image_object for image_object in image_json['objects']
-                                         if image_object['label'] in TFL_LABEL]
-
-    show_image_and_gt(c_image, objects, fig_num)
-
-    red_x, red_y, green_x, green_y = find_tfl_lights(c_image)
-    # 'ro': This specifies the format string. 'r' represents the color red, and 'o' represents circles as markers.
-    plt.plot(red_x, red_y, 'ro', markersize=4)
-    plt.plot(green_x, green_y, 'go', markersize=4)
+    red_x, red_y, green_x, green_y = find_tfl_lights(image, some_threshold=42)
+    plt.plot(red_x, red_y, 'ro', color='r', markersize=4)
+    plt.plot(green_x, green_y, 'ro', color='g', markersize=4)
 
 
 def main(argv=None):
@@ -92,7 +153,6 @@ def main(argv=None):
 
     :param argv: In case you want to programmatically run this.
     """
-
     parser = argparse.ArgumentParser("Test TFL attention mechanism")
     parser.add_argument('-i', '--image', type=str, help='Path to an image')
     parser.add_argument("-j", "--json", type=str, help="Path to image json file -> GT for comparison")
