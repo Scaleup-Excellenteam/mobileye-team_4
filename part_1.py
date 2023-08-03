@@ -122,7 +122,6 @@ def find_traffic_lights_by_color(c_image: np.ndarray, lower_color: np.ndarray, u
     return x, y
 
 
-# def crop_tfl_lights():
 def crop_and_save_boxes(image: np.ndarray, x_coords_list, y_coords_list, save_directory, color):
     # Ensure the save directory exists
     os.makedirs(save_directory, exist_ok=True)
@@ -134,17 +133,13 @@ def crop_and_save_boxes(image: np.ndarray, x_coords_list, y_coords_list, save_di
         crop_size = 70
         crop_width = 30
         x_max = min(image.shape[1], x + crop_width // 2)
+        x_min = max(0, x - crop_size // 2)
 
         if color == RED_LIGHT:
-            x_min = max(0, x - crop_width // 2)
             y_min = max(0, y - 30)
-
             y_max = min(image.shape[0], y + 70)
-        elif color == GREEN_LIGHT:
-            # Calculate the coordinates for the crop box
-            x_min = max(0, x - crop_size // 2)
+        else:
             y_min = max(0, y - 50)
-            x_max = min(image.shape[1], x + crop_size // 2)
             y_max = min(image.shape[0], y + 20)
 
         # Crop the box from the original image
@@ -152,7 +147,7 @@ def crop_and_save_boxes(image: np.ndarray, x_coords_list, y_coords_list, save_di
         # Convert the cropped box from BGR to RGB
         cropped_box_rgb = cv2.cvtColor(cropped_box, cv2.COLOR_BGR2RGB)
         # Save the cropped box as a PNG image in the designated directory
-        save_path = os.path.join(save_directory, f"cropped_box_{idx}_{timestamp}.png")
+        save_path = os.path.join(save_directory, f"{idx}_{timestamp}.png")
         cv2.imwrite(save_path, cropped_box_rgb)
 
 
