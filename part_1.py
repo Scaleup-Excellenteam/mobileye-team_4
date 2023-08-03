@@ -1,3 +1,4 @@
+import os
 from typing import List, Optional, Union, Dict, Tuple
 import json
 import argparse
@@ -8,6 +9,7 @@ import cv2
 from PIL import Image
 import matplotlib.pyplot as plt
 from scipy.ndimage import convolve
+from datetime import datetime
 
 # if you wanna iterate over multiple files and json, the default source folder name is this.
 DEFAULT_BASE_DIR: str = 'INSERT_YOUR_DIR_WITH_PNG_AND_JSON_HERE'
@@ -21,6 +23,8 @@ RED_Y_COORDINATES = List[int]
 GREEN_X_COORDINATES = List[int]
 GREEN_Y_COORDINATES = List[int]
 
+RED_LIGHT = 'RED'
+GREEN_LIGHT = 'GREEN'
 
 def display_pictures(c_image: np.ndarray, preprocessed_image: np.ndarray):
     # Display the original and preprocessed images side by side
@@ -118,6 +122,40 @@ def find_traffic_lights_by_color(c_image: np.ndarray, lower_color: np.ndarray, u
     return x, y
 
 
+# def crop_tfl_lights():
+def crop_and_save_boxes(image: np.ndarray, x_coords_list, y_coords_list, save_directory, color):
+    # Ensure the save directory exists
+    os.makedirs(save_directory, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
+    print(f"x_coords: {len(x_coords_list)}")
+    for idx, (x, y) in enumerate(zip(x_coords_list, y_coords_list)):
+        # Set the size of the crop box (adjust these values as needed)
+        crop_size = 70
+        crop_width = 30
+        x_max = min(image.shape[1], x + crop_width // 2)
+
+        if color == RED_LIGHT:
+            x_min = max(0, x - crop_width // 2)
+            y_min = max(0, y - 30)
+
+            y_max = min(image.shape[0], y + 70)
+        elif color == GREEN_LIGHT:
+            # Calculate the coordinates for the crop box
+            x_min = max(0, x - crop_size // 2)
+            y_min = max(0, y - 50)
+            x_max = min(image.shape[1], x + crop_size // 2)
+            y_max = min(image.shape[0], y + 20)
+
+        # Crop the box from the original image
+        cropped_box = image[y_min:y_max, x_min:x_max]
+        # Convert the cropped box from BGR to RGB
+        cropped_box_rgb = cv2.cvtColor(cropped_box, cv2.COLOR_BGR2RGB)
+        # Save the cropped box as a PNG image in the designated directory
+        save_path = os.path.join(save_directory, f"cropped_box_{idx}_{timestamp}.png")
+        cv2.imwrite(save_path, cropped_box_rgb)
+
+
 def find_tfl_lights(c_image: np.ndarray, **kwargs) -> Tuple[
     RED_X_COORDINATES, RED_Y_COORDINATES, GREEN_X_COORDINATES, GREEN_Y_COORDINATES]:
     """
@@ -131,7 +169,8 @@ def find_tfl_lights(c_image: np.ndarray, **kwargs) -> Tuple[
         4-tuple of x_red, y_red, x_green, y_green.
     """
     # Apply high-pass filter
-    c_image = high_pass_filter(c_image)
+    processed_image = high_pass_filter(c_image)
+    # display_pictures(c_image, processed_image)
     # Define color ranges for red and green
     lower_red = np.array([220, 0, 0])
     upper_red = np.array([255, 55, 55])
@@ -139,13 +178,12 @@ def find_tfl_lights(c_image: np.ndarray, **kwargs) -> Tuple[
     upper_green = np.array([100, 255, 100])
 
     # Find red and green traffic light candidates
-    red_x, red_y = find_traffic_lights_by_color(c_image, lower_red, upper_red)
-    green_x, green_y = find_traffic_lights_by_color(c_image, lower_green, upper_green)
+    red_x, red_y = find_traffic_lights_by_color(processed_image, lower_red, upper_red)
+    green_x, green_y = find_traffic_lights_by_color(processed_image, lower_green, upper_green)
 
     return red_x, red_y, green_x, green_y
 
 
-### GIVEN CODE TO TEST YOUR IMPLENTATION AND PLOT THE PICTURES
 def show_image_and_gt(image, objs, fig_num=None):
     plt.figure(fig_num)
     plt.imshow(image)
@@ -175,6 +213,10 @@ def test_find_tfl_lights(image_path, json_path=None, fig_num=None):
     red_x, red_y, green_x, green_y = find_tfl_lights(image, some_threshold=42)
     plt.plot(red_x, red_y, 'ro', color='r', markersize=4)
     plt.plot(green_x, green_y, 'ro', color='g', markersize=4)
+
+    save_directory = Path.cwd() / 'resources/cropped'
+    crop_and_save_boxes(image, red_x, red_y, save_directory, RED_LIGHT)
+    crop_and_save_boxes(image, green_x, green_y, save_directory, GREEN_LIGHT)
 
 
 def main(argv=None):
