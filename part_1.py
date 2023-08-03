@@ -26,6 +26,7 @@ GREEN_Y_COORDINATES = List[int]
 RED_LIGHT = 'RED'
 GREEN_LIGHT = 'GREEN'
 
+
 def display_pictures(c_image: np.ndarray, preprocessed_image: np.ndarray):
     # Display the original and preprocessed images side by side
     plt.figure(figsize=(10, 5))
@@ -74,11 +75,12 @@ def high_pass_filter(image: np.ndarray, kernel_size: int = 3) -> np.ndarray:
         ]
     )
     # Initialize an empty array to store the filtered image
-    filtered_image = np.zeros_like(image)
-
+    filtered_image = np.zeros_like(image, dtype=float)
+    # acc = []
     # Apply the high-pass filter to each channel of the image
     for channel in range(image.shape[2]):
         filtered_image[:, :, channel] = convolve(image[:, :, channel].astype(np.float32), kernel)
+        # acc.append(convolve(image[:, :, channel].astype(float), kernel.astype(float)))
 
     # Clip the values to ensure they are in the valid range [0, 255]
     filtered_image = np.clip(filtered_image, 0, 255)
@@ -127,7 +129,6 @@ def crop_and_save_boxes(image: np.ndarray, x_coords_list, y_coords_list, save_di
     os.makedirs(save_directory, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
-    print(f"x_coords: {len(x_coords_list)}")
     for idx, (x, y) in enumerate(zip(x_coords_list, y_coords_list)):
         # Set the size of the crop box (adjust these values as needed)
         crop_size = 70
