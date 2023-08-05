@@ -1,3 +1,4 @@
+import os
 from typing import List, Optional, Union, Dict, Tuple
 import json
 import argparse
@@ -262,6 +263,35 @@ def draw_traffic_light_rectangles(image: np.ndarray, red_x: List[int], red_y: Li
     return image_with_rectangles
 
 
+def adjust_boundary(image: np.ndarray, x: int, y: int, color: str, width: int = 20, height: int = 40) -> Tuple:
+    """
+    Adjust the cropping coordinates within the image boundaries.
+
+    Args:
+        image (np.ndarray): The input image as a NumPy array.
+        x, y: The x and y coordinates of the detected traffic light.
+        color (str): The color of the traffic light ('red' or 'green').
+        width (int): The width of the rectangle.
+        height (int): The height of the rectangle.
+
+    Returns:
+        Tuple: Adjusted coordinates for cropping.
+    """
+    # Define coordinates to crop
+    top_left_y = int(y - height / 3) if color == 'red' else int(y - height)
+    bottom_right_y = int(y + height) if color == 'red' else int(y + height / 3)
+    top_left_x = int(x - width // 2)
+    bottom_right_x = int(x + width // 2)
+
+    # Adjust the coordinates within the image boundaries
+    top_left_y = max(0, top_left_y)
+    bottom_right_y = min(image.shape[0] - 1, bottom_right_y)
+    top_left_x = max(0, top_left_x)
+    bottom_right_x = min(image.shape[1] - 1, bottom_right_x)
+
+    return top_left_x, top_left_y, bottom_right_x, bottom_right_y
+
+
 def crop_traffic_light(image: np.ndarray, x: int, y: int, color: str, width: int = 20, height: int = 40) -> np.ndarray:
     """
     Crop the detected traffic light from the image.
@@ -276,11 +306,8 @@ def crop_traffic_light(image: np.ndarray, x: int, y: int, color: str, width: int
     Returns:
         np.ndarray: The cropped image.
     """
-    # Define coordinates to crop
-    top_left_y = int(y - height / 3) if color == 'red' else int(y - height)
-    bottom_right_y = int(y + height) if color == 'red' else int(y + height / 3)
-    top_left_x = int(x - width // 2)
-    bottom_right_x = int(x + width // 2)
+    # Get adjusted coordinates for cropping
+    top_left_x, top_left_y, bottom_right_x, bottom_right_y = adjust_boundary(image, x, y, color, width, height)
 
     # Crop the rectangle
     cropped_image = image[top_left_y:bottom_right_y, top_left_x:bottom_right_x]
@@ -296,17 +323,21 @@ def save_image(image: np.ndarray, output_path: str):
         image (np.ndarray): The image to save.
         output_path (str): The path where the image will be saved.
     """
-    # Save the image
-    cv2.imwrite(output_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    # Check if the image is not empty
+    if image.size > 0:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        # Save the image
+        cv2.imwrite(output_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
 
 
 def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None, fig_num=None):
     """
     Run the attention code.
     """
-    # using pillow to load the image
+    # Using pillow to load the image
     image: Image = Image.open(image_path)
-    # converting the image to a numpy ndarray array
+    # Converting the image to a numpy ndarray array
     c_image: np.ndarray = np.array(image)
 
     objects = None
@@ -337,7 +368,6 @@ def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None,
     for i, (x, y) in enumerate(zip(green_x, green_y)):
         cropped_image = crop_traffic_light(c_image, x, y, 'green')
         save_image(cropped_image, f'traffic_lights/green_light_{i}.png')
-
 
 
 def main(argv=None):
