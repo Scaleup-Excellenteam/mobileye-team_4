@@ -229,6 +229,39 @@ def show_image_and_gt(c_image: np.ndarray, objects: Optional[List[POLYGON_OBJECT
             plt.legend()
 
 
+def draw_traffic_light_rectangles(image: np.ndarray, red_x: List[int], red_y: List[int], green_x: List[int],
+                                  green_y: List[int], width: int = 20, height: int = 40) -> np.ndarray:
+    """
+    Draw rectangles around the detected traffic lights.
+
+    Args:
+        image (np.ndarray): The input image as a NumPy array.
+        red_x, red_y: The x and y coordinates of the detected red traffic lights.
+        green_x, green_y: The x and y coordinates of the detected green traffic lights.
+        width (int): The width of the rectangle.
+        height (int): The height of the rectangle.
+
+    Returns:
+        np.ndarray: The image with rectangles drawn.
+    """
+    # Make a copy of the image to avoid modifying the original
+    image_with_rectangles = image.copy()
+
+    # Draw rectangles for red lights (light at the top of the rectangle)
+    for x, y in zip(red_x, red_y):
+        top_left = (int(x - width // 2), int(y - height / 3))
+        bottom_right = (int(x + width // 2), int(y + height))
+        cv2.rectangle(image_with_rectangles, top_left, bottom_right, (0, 200, 255), 2)
+
+    # Draw rectangles for green lights (light at the bottom of the rectangle)
+    for x, y in zip(green_x, green_y):
+        top_left = (int(x - width // 2), int(y - height))
+        bottom_right = (int(x + width // 2), int(y + height / 3))
+        cv2.rectangle(image_with_rectangles, top_left, bottom_right, (0, 200, 255), 2)
+
+    return image_with_rectangles
+
+
 def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None, fig_num=None):
     """
     Run the attention code.
@@ -247,6 +280,13 @@ def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None,
     show_image_and_gt(c_image, objects, fig_num)
 
     red_x, red_y, green_x, green_y = find_tfl_lights(c_image)
+
+    # Draw rectangles around the detected traffic lights
+    c_image_with_rectangles = draw_traffic_light_rectangles(c_image, red_x, red_y, green_x, green_y)
+
+    # Display the image with rectangles
+    plt.imshow(c_image_with_rectangles)
+
     # 'ro': This specifies the format string. 'r' represents the color red, and 'o' represents circles as markers.
     plt.plot(red_x, red_y, 'ro', markersize=4)
     plt.plot(green_x, green_y, 'go', markersize=4)
