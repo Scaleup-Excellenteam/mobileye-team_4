@@ -262,6 +262,44 @@ def draw_traffic_light_rectangles(image: np.ndarray, red_x: List[int], red_y: Li
     return image_with_rectangles
 
 
+def crop_traffic_light(image: np.ndarray, x: int, y: int, color: str, width: int = 20, height: int = 40) -> np.ndarray:
+    """
+    Crop the detected traffic light from the image.
+
+    Args:
+        image (np.ndarray): The input image as a NumPy array.
+        x, y: The x and y coordinates of the detected traffic light.
+        color (str): The color of the traffic light ('red' or 'green').
+        width (int): The width of the rectangle.
+        height (int): The height of the rectangle.
+
+    Returns:
+        np.ndarray: The cropped image.
+    """
+    # Define coordinates to crop
+    top_left_y = int(y - height / 3) if color == 'red' else int(y - height)
+    bottom_right_y = int(y + height) if color == 'red' else int(y + height / 3)
+    top_left_x = int(x - width // 2)
+    bottom_right_x = int(x + width // 2)
+
+    # Crop the rectangle
+    cropped_image = image[top_left_y:bottom_right_y, top_left_x:bottom_right_x]
+
+    return cropped_image
+
+
+def save_image(image: np.ndarray, output_path: str):
+    """
+    Save the given image to the specified path.
+
+    Args:
+        image (np.ndarray): The image to save.
+        output_path (str): The path where the image will be saved.
+    """
+    # Save the image
+    cv2.imwrite(output_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+
+
 def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None, fig_num=None):
     """
     Run the attention code.
@@ -290,6 +328,16 @@ def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None,
     # 'ro': This specifies the format string. 'r' represents the color red, and 'o' represents circles as markers.
     plt.plot(red_x, red_y, 'ro', markersize=4)
     plt.plot(green_x, green_y, 'go', markersize=4)
+
+    # Iterate over red and green light coordinates, crop the lights and save them
+    for i, (x, y) in enumerate(zip(red_x, red_y)):
+        cropped_image = crop_traffic_light(c_image, x, y, 'red')
+        save_image(cropped_image, f'traffic_lights/red_light_{i}.png')
+
+    for i, (x, y) in enumerate(zip(green_x, green_y)):
+        cropped_image = crop_traffic_light(c_image, x, y, 'green')
+        save_image(cropped_image, f'traffic_lights/green_light_{i}.png')
+
 
 
 def main(argv=None):
