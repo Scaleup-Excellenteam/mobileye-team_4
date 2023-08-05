@@ -56,33 +56,25 @@ def create_color_masks(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return red_mask, green_mask
 
 
-def high_pass_filter(image: np.ndarray, sigma: float = 3.0) -> np.ndarray:
+def high_pass_filter(image: np.ndarray, kernel_size: Tuple[int, int] = (11, 11), sigma: float = 3.0) -> np.ndarray:
     """
     Apply a Gaussian high-pass filter to the input image to enhance edges and details.
     Args:
         image (np.ndarray): The input image as a NumPy array.
-        sigma (float): The standard deviation for Gaussian kernel. The higher sigma, the more image will be blurred before subtracting it from the original image.
+        kernel_size (Tuple[int, int]): The size of the Gaussian kernel. The larger the kernel, the more the image will be blurred.
+        sigma (float): The standard deviation for Gaussian kernel. The higher sigma, the more the image will be blurred.
     Returns:
         np.ndarray: The filtered image.
     """
 
     # Apply Gaussian blur to the image
-    low_pass = gaussian_filter(image, sigma)
+    low_pass = cv2.GaussianBlur(image, kernel_size, sigma)
 
-    # Convert the image to float64 for subtraction operation
-    image = image.astype(np.float64)
+    # Subtract the low-pass filtered image from the original image and add 20 offset
+    high_pass = image - low_pass + 20
 
-    # Subtract the low-pass filtered image from the original image to get a high-pass filtered image
-    high_pass = image - low_pass
-
-    # Normalize to 0-255
-    high_pass_min = high_pass.min()
-    high_pass_max = high_pass.max() - high_pass_min
-
-    if high_pass_max > 0:
-        high_pass = (high_pass - high_pass_min) / high_pass_max * 255
-    else:
-        high_pass = np.zeros_like(high_pass)
+    # Ensure that the values are in the valid range 0-255
+    high_pass = np.clip(high_pass, 0, 255)
 
     return high_pass.astype(np.uint8)
 
@@ -156,7 +148,7 @@ def apply_filters_and_threshold(image_mask, kernel, percentile=99.9):
     Returns:
         np.ndarray: The thresholded and filtered image.
     """
-    edges = high_pass_filter(image_mask, sigma=3.0)
+    edges = high_pass_filter(image_mask)
     convolved = convolve(edges.astype(np.float64), kernel, "same")
     thresholded = convolved > np.percentile(convolved, percentile)
     filtered = maximum_filter(thresholded, 5)
