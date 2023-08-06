@@ -3,12 +3,14 @@ from typing import List, Optional, Union, Dict, Tuple
 import json
 import argparse
 from pathlib import Path
-from scipy.ndimage import maximum_filter
-import numpy as np
+
 import cv2
+import numpy as np
+from scipy.ndimage import gaussian_filter, maximum_filter
+from scipy.signal import convolve
 from PIL import Image
 import matplotlib.pyplot as plt
-from scipy.ndimage import convolve
+from sklearn.cluster import DBSCAN
 from datetime import datetime
 
 # if you wanna iterate over multiple files and json, the default source folder name is this.
@@ -23,196 +25,345 @@ RED_Y_COORDINATES = List[int]
 GREEN_X_COORDINATES = List[int]
 GREEN_Y_COORDINATES = List[int]
 
-RED_LIGHT = 'RED'
-GREEN_LIGHT = 'GREEN'
 
-
-def display_pictures(c_image: np.ndarray, preprocessed_image: np.ndarray):
-    # Display the original and preprocessed images side by side
-    plt.figure(figsize=(10, 5))
-
-    # Plot the original image
-    plt.subplot(1, 2, 1)
-    plt.imshow(c_image)
-    plt.title('Original Image')
-    plt.axis('off')
-
-    # Plot the preprocessed image
-    plt.subplot(1, 2, 2)
-    plt.imshow(preprocessed_image)
-    plt.title('Preprocessed Image')
-    plt.axis('off')
-
-    plt.tight_layout()
-    plt.show()
-
-
-def normalize_image(image: np.ndarray) -> np.ndarray:
-    # Normalize the image pixel values to [0, 1]
-    min_pixel_value = np.min(image)
-    max_pixel_value = np.max(image)
-    normalized_image = (image - min_pixel_value) / (max_pixel_value - min_pixel_value)
-    return normalized_image
-
-
-def high_pass_filter(image: np.ndarray, kernel_size: int = 3) -> np.ndarray:
+def create_color_masks(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Apply a high-pass filter to the input image to enhance edges and details.
+    Create color masks for red and green colors in the image.
 
     Args:
         image (np.ndarray): The input image as a NumPy array.
-        kernel_size (int): The size of the filter kernel. (default: 3)
 
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: The red and green masks.
+    """
+    # Convert the image to HSV color space
+    hsv_image = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+
+    # Define red and green traffic lights RGB values
+    red_lights_rgb = [(255, 98, 29), (157, 63, 45), (255, 211, 106), (255, 195, 164), (229, 119, 118)]
+    green_lights_rgb = [(0, 255, 255), (0, 204, 204), (144, 238, 144), (0, 173, 220), (88, 218, 208)]
+
+    # Convert the RGB values to HSV
+    red_lights_hsv = [cv2.cvtColor(np.uint8([[rgb]]), cv2.COLOR_RGB2HSV)[0][0] for rgb in red_lights_rgb]
+    green_lights_hsv = [cv2.cvtColor(np.uint8([[rgb]]), cv2.COLOR_RGB2HSV)[0][0] for rgb in green_lights_rgb]
+
+    # Define lower and upper bounds for red and green colors
+    lower_red, upper_red = np.min(red_lights_hsv, axis=0), np.max(red_lights_hsv, axis=0)
+    lower_green, upper_green = np.min(green_lights_hsv, axis=0), np.max(green_lights_hsv, axis=0)
+
+    # Create masks for red and green colors
+    red_mask = cv2.inRange(hsv_image, lower_red, upper_red)
+    green_mask = cv2.inRange(hsv_image, lower_green, upper_green)
+
+    return red_mask, green_mask
+
+
+def high_pass_filter(image: np.ndarray, kernel_size: Tuple[int, int] = (11, 11), sigma: float = 3.0) -> np.ndarray:
+    """
+    Apply a Gaussian high-pass filter to the input image to enhance edges and details.
+    Args:
+        image (np.ndarray): The input image as a NumPy array.
+        kernel_size (Tuple[int, int]): The size of the Gaussian kernel. The larger the kernel, the more the image will be blurred.
+        sigma (float): The standard deviation for Gaussian kernel. The higher sigma, the more the image will be blurred.
     Returns:
         np.ndarray: The filtered image.
     """
-    # Define a kernel for high-pass filtering
-    kernel = np.array(
-        [
-            [-1, -1, -1],
-            [-1, 8, -1],
-            [-1, -1, -1]
-        ]
-    )
-    # Initialize an empty array to store the filtered image
-    filtered_image = np.zeros_like(image, dtype=float)
-    # acc = []
-    # Apply the high-pass filter to each channel of the image
-    for channel in range(image.shape[2]):
-        filtered_image[:, :, channel] = convolve(image[:, :, channel].astype(np.float32), kernel)
-        # acc.append(convolve(image[:, :, channel].astype(float), kernel.astype(float)))
 
-    # Clip the values to ensure they are in the valid range [0, 255]
-    filtered_image = np.clip(filtered_image, 0, 255)
+    # Apply Gaussian blur to the image
+    low_pass = cv2.GaussianBlur(image, kernel_size, sigma)
 
-    # Exchange the dark and bright parts by subtracting the filtered image from the original image
-    inverted_image = image.astype(np.int16) - filtered_image.astype(np.int16)
-    inverted_image = np.clip(inverted_image, 0, 255)
+    # Subtract the low-pass filtered image from the original image and add 20 offset
+    high_pass = image - low_pass + 20
 
-    return inverted_image.astype(np.uint8)
+    # Ensure that the values are in the valid range 0-255
+    high_pass = np.clip(high_pass, 0, 255)
+
+    return high_pass.astype(np.float64)
 
 
-def find_traffic_lights_by_color(c_image: np.ndarray, lower_color: np.ndarray, upper_color: np.ndarray) -> Tuple[
-    List[int], List[int]]:
+def filter_edge_points(x_coords, y_coords, width, height, margin=5):
     """
-    Detect traffic light candidates of a specific color in the image.
+    Filter out the points near the edges of the image.
 
     Args:
-        c_image (np.ndarray): The input image.
-        lower_color (np.ndarray): The lower bound of the color range.
-        upper_color (np.ndarray): The upper bound of the color range.
+        x_coords, y_coords: The x and y coordinates.
+        width, height: The dimensions of the image.
+        margin: The margin size to consider as an edge.
 
     Returns:
-        Tuple[List[int], List[int]]: The x and y coordinates of the detected lights.
+        filtered_x, filtered_y: The filtered x and y coordinates.
     """
-    # Create a mask for the specified color
-    mask = cv2.inRange(c_image, lower_color, upper_color)
-
-    mask = maximum_filter(mask, size=20)
-    # Find contours in the masked image
-    contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
-
-    # Initialize lists to hold contour coordinates
-    x, y = [], []
-
-    # Append coordinates of each light to the lists
-    for contour in contours:
-        (x_coord, y_coord), radius = cv2.minEnclosingCircle(contour)
-        x.append(int(x_coord))
-        y.append(int(y_coord))
-
-    return x, y
+    filtered_x = []
+    filtered_y = []
+    for x, y in zip(x_coords, y_coords):
+        if margin < x < width - margin and margin < y < height - margin:
+            filtered_x.append(x)
+            filtered_y.append(y)
+    return filtered_x, filtered_y
 
 
-def crop_and_save_boxes(image: np.ndarray, x_coords_list, y_coords_list, save_directory, color):
-    # Ensure the save directory exists
-    os.makedirs(save_directory, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+# TFL detection function
+def apply_filters_and_threshold(image_mask, percentile=99.9):
+    """
+    Apply high-pass filters and threshold the convolved image.
 
-    for idx, (x, y) in enumerate(zip(x_coords_list, y_coords_list)):
-        # Set the size of the crop box (adjust these values as needed)
-        crop_size = 70
-        crop_width = 30
-        x_max = min(image.shape[1], x + crop_width // 2)
-        x_min = max(0, x - crop_size // 2)
+    Args:
+        image_mask (np.ndarray): The input color mask.
+        percentile (float): Percentile for thresholding.
 
-        if color == RED_LIGHT:
-            y_min = max(0, y - 30)
-            y_max = min(image.shape[0], y + 70)
-        else:
-            y_min = max(0, y - 50)
-            y_max = min(image.shape[0], y + 20)
+    Returns:
+        np.ndarray: The thresholded and filtered image.
+    """
+    kernel = np.array([
+        [-1, -1, -1, -1, -1],
+        [-1, 1, 2, 1, -1],
+        [-1, 2, 4, 2, -1],
+        [-1, 1, 2, 1, -1],
+        [-1, -1, -1, -1, -1]
+    ])
+    edges = high_pass_filter(image_mask)
+    convolved = convolve(edges.astype(np.float64), kernel, "same")
+    threshold = convolved > np.percentile(convolved, percentile)
+    filtered = maximum_filter(threshold, 5)
+    return filtered
 
-        # Crop the box from the original image
-        cropped_box = image[y_min:y_max, x_min:x_max]
-        # Convert the cropped box from BGR to RGB
-        cropped_box_rgb = cv2.cvtColor(cropped_box, cv2.COLOR_BGR2RGB)
-        # Save the cropped box as a PNG image in the designated directory
-        save_path = os.path.join(save_directory, f"{idx}_{timestamp}.png")
-        cv2.imwrite(save_path, cropped_box_rgb)
+
+def cluster_and_find_centroids(x_coords, y_coords, eps=5, min_samples=2):
+    """
+    Cluster the given coordinates and find the centroids.
+
+    Args:
+        x_coords, y_coords: The x and y coordinates.
+        eps: The maximum distance between two samples for one to be considered as in the neighborhood of the other.
+        min_samples: The number of samples in a neighborhood for a point to be considered as a core point.
+
+    Returns:
+        centroids_x, centroids_y: The x and y coordinates of the centroids.
+    """
+    coordinates = np.column_stack((x_coords, y_coords))
+    if len(coordinates) == 0:
+        return [], []
+
+    clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(coordinates)
+    labels = clustering.labels_
+
+    centroids_x = []
+    centroids_y = []
+
+    for cluster_label in set(labels):
+        if cluster_label == -1:  # Ignore noise
+            continue
+
+        cluster_points = coordinates[labels == cluster_label]
+        centroid_x = np.mean(cluster_points[:, 0])
+        centroid_y = np.mean(cluster_points[:, 1])
+        centroids_x.append(centroid_x)
+        centroids_y.append(centroid_y)
+
+    return centroids_x, centroids_y
+
+
+def find_tfl_coordinates(color_mask):
+    """
+    Find traffic light coordinates for a specific color mask.
+
+    Args:
+        color_mask (np.ndarray): The color mask.
+
+    Returns:
+        x, y: The x and y coordinates of the detected traffic lights.
+    """
+    filtered_mask = apply_filters_and_threshold(color_mask)
+    y, x = np.nonzero(filtered_mask)
+    suppressed = cluster_and_find_centroids(x, y)
+    return suppressed
 
 
 def find_tfl_lights(c_image: np.ndarray, **kwargs) -> Tuple[
     RED_X_COORDINATES, RED_Y_COORDINATES, GREEN_X_COORDINATES, GREEN_Y_COORDINATES]:
     """
-    Detect candidates for TFL lights.
+    Find traffic light coordinates in the given image.
 
     Args:
-        c_image (np.ndarray): The image itself as np.uint8, shape of (H, W, 3).
-        kwargs: Whatever config you want to pass in here.
+        c_image (np.ndarray): The input image as a NumPy array.
 
     Returns:
-        4-tuple of x_red, y_red, x_green, y_green.
+        Tuple: The x and y coordinates of the detected red and green traffic lights.
     """
-    # Apply high-pass filter
-    processed_image = high_pass_filter(c_image)
-    # display_pictures(c_image, processed_image)
-    # Define color ranges for red and green
-    lower_red = np.array([220, 0, 0])
-    upper_red = np.array([255, 55, 55])
-    lower_green = np.array([0, 200, 0])
-    upper_green = np.array([100, 255, 100])
+    red_mask, green_mask = create_color_masks(c_image)
 
-    # Find red and green traffic light candidates
-    red_x, red_y = find_traffic_lights_by_color(processed_image, lower_red, upper_red)
-    green_x, green_y = find_traffic_lights_by_color(processed_image, lower_green, upper_green)
+    red_x, red_y = find_tfl_coordinates(red_mask)
+    green_x, green_y = find_tfl_coordinates(green_mask)
 
-    return red_x, red_y, green_x, green_y
+    red_x, red_y = filter_edge_points(red_x, red_y, c_image.shape[1], c_image.shape[0])
+    green_x, green_y = filter_edge_points(green_x, green_y, c_image.shape[1], c_image.shape[0])
+
+    return list(red_x), list(red_y), list(green_x), list(green_y)
 
 
-def show_image_and_gt(image, objs, fig_num=None):
-    plt.figure(fig_num)
-    plt.imshow(image)
+def show_image_and_gt(c_image: np.ndarray, objects: Optional[List[POLYGON_OBJECT]], fig_num: int = None):
+    # ensure a fresh canvas for plotting the image and objects.
+    plt.figure(fig_num).clf()
+    # displays the input image.
+    plt.imshow(c_image)
     labels = set()
-    if objs is not None:
-        for obj in objs:
-            if obj['label'] == 'traffic light':
-                polygon = np.array(obj['polygon']).reshape((-1, 1, 2))
-                plt.plot(polygon[:, :, 0], polygon[:, :, 1], 'g')
-                labels.add(obj['label'])
+    if objects:
+        for image_object in objects:
+            # Extract the 'polygon' array from the image object
+            poly: np.array = np.array(image_object['polygon'])
+            # Use advanced indexing to create a closed polygon array
+            # The modulo operation ensures that the array is indexed circularly, closing the polygon
+            polygon_array = poly[np.arange(len(poly)) % len(poly)]
+            # gets the x coordinates (first column -> 0) anf y coordinates (second column -> 1)
+            x_coordinates, y_coordinates = polygon_array[:, 0], polygon_array[:, 1]
+            color = 'r'
+            plt.plot(x_coordinates, y_coordinates, color, label=image_object['label'])
+            labels.add(image_object['label'])
+        if 1 < len(labels):
+            # The legend provides a visual representation of the labels associated with the plotted objects.
+            # It helps in distinguishing different objects in the plot based on their labels.
+            plt.legend()
 
-        print(f"Figure {fig_num}: {labels}")
+
+def draw_traffic_light_rectangles(image: np.ndarray, red_x: List[int], red_y: List[int], green_x: List[int],
+                                  green_y: List[int], width: int = 20, height: int = 40) -> np.ndarray:
+    """
+    Draw rectangles around the detected traffic lights.
+
+    Args:
+        image (np.ndarray): The input image as a NumPy array.
+        red_x, red_y: The x and y coordinates of the detected red traffic lights.
+        green_x, green_y: The x and y coordinates of the detected green traffic lights.
+        width (int): The width of the rectangle.
+        height (int): The height of the rectangle.
+
+    Returns:
+        np.ndarray: The image with rectangles drawn.
+    """
+    # Make a copy of the image to avoid modifying the original
+    image_with_rectangles = image.copy()
+
+    # Draw rectangles for red lights (light at the top of the rectangle)
+    for x, y in zip(red_x, red_y):
+        top_left = (int(x - width // 2), int(y - height / 3))
+        bottom_right = (int(x + width // 2), int(y + height))
+        cv2.rectangle(image_with_rectangles, top_left, bottom_right, (255, 55, 0), 2)
+
+    # Draw rectangles for green lights (light at the bottom of the rectangle)
+    for x, y in zip(green_x, green_y):
+        top_left = (int(x - width // 2), int(y - height))
+        bottom_right = (int(x + width // 2), int(y + height / 3))
+        cv2.rectangle(image_with_rectangles, top_left, bottom_right, (0, 181, 26), 2)
+
+    return image_with_rectangles
 
 
-def test_find_tfl_lights(image_path, json_path=None, fig_num=None):
+def adjust_boundary(image: np.ndarray, x: int, y: int, color: str, width: int = 20, height: int = 40) -> Tuple:
+    """
+    Adjust the cropping coordinates within the image boundaries.
+
+    Args:
+        image (np.ndarray): The input image as a NumPy array.
+        x, y: The x and y coordinates of the detected traffic light.
+        color (str): The color of the traffic light ('red' or 'green').
+        width (int): The width of the rectangle.
+        height (int): The height of the rectangle.
+
+    Returns:
+        Tuple: Adjusted coordinates for cropping.
+    """
+    # Define coordinates to crop
+    top_left_y = int(y - height / 3) if color == 'red' else int(y - height)
+    bottom_right_y = int(y + height) if color == 'red' else int(y + height / 3)
+    top_left_x = int(x - width // 2)
+    bottom_right_x = int(x + width // 2)
+
+    # Adjust the coordinates within the image boundaries
+    top_left_y = max(0, top_left_y)
+    bottom_right_y = min(image.shape[0] - 1, bottom_right_y)
+    top_left_x = max(0, top_left_x)
+    bottom_right_x = min(image.shape[1] - 1, bottom_right_x)
+
+    return top_left_x, top_left_y, bottom_right_x, bottom_right_y
+
+
+def crop_traffic_light(image: np.ndarray, x: int, y: int, color: str, width: int = 20, height: int = 40) -> np.ndarray:
+    """
+    Crop the detected traffic light from the image.
+
+    Args:
+        image (np.ndarray): The input image as a NumPy array.
+        x, y: The x and y coordinates of the detected traffic light.
+        color (str): The color of the traffic light ('red' or 'green').
+        width (int): The width of the rectangle.
+        height (int): The height of the rectangle.
+
+    Returns:
+        np.ndarray: The cropped image.
+    """
+    # Get adjusted coordinates for cropping
+    top_left_x, top_left_y, bottom_right_x, bottom_right_y = adjust_boundary(image, x, y, color, width, height)
+
+    # Crop the rectangle
+    cropped_image = image[top_left_y:bottom_right_y, top_left_x:bottom_right_x]
+
+    return cropped_image
+
+
+def save_image(image: np.ndarray, output_path: str):
+    """
+    Save the given image to the specified path.
+
+    Args:
+        image (np.ndarray): The image to save.
+        output_path (str): The path where the image will be saved.
+    """
+    # Check if the image is not empty
+    if image.size > 0:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        # Save the image
+        cv2.imwrite(output_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+
+
+def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None, fig_num=None):
     """
     Run the attention code.
     """
-    image = np.array(Image.open(image_path))
-    if json_path is None:
-        objects = None
-    else:
-        json_data = json.load(open(json_path))
-        objects = json_data['objects']
-    show_image_and_gt(image, objects, fig_num)
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    # Using pillow to load the image
+    image: Image = Image.open(image_path)
+    # Converting the image to a numpy ndarray array
+    c_image: np.ndarray = np.array(image)
 
-    red_x, red_y, green_x, green_y = find_tfl_lights(image, some_threshold=42)
-    plt.plot(red_x, red_y, 'ro', color='r', markersize=4)
-    plt.plot(green_x, green_y, 'ro', color='g', markersize=4)
+    objects = None
+    if image_json_path:
+        image_json = json.load(Path(image_json_path).open())
+        objects: List[POLYGON_OBJECT] = [image_object for image_object in image_json['objects']
+                                         if image_object['label'] in TFL_LABEL]
 
-    save_directory = Path.cwd() / 'resources/cropped'
-    crop_and_save_boxes(image, red_x, red_y, save_directory, RED_LIGHT)
-    crop_and_save_boxes(image, green_x, green_y, save_directory, GREEN_LIGHT)
+    show_image_and_gt(c_image, objects, fig_num)
+
+    red_x, red_y, green_x, green_y = find_tfl_lights(c_image)
+
+    # Draw rectangles around the detected traffic lights
+    c_image_with_rectangles = draw_traffic_light_rectangles(c_image, red_x, red_y, green_x, green_y)
+
+    # Display the image with rectangles
+    plt.imshow(c_image_with_rectangles)
+
+    # 'ro': This specifies the format string. 'r' represents the color red, and 'o' represents circles as markers.
+    plt.plot(red_x, red_y, 'ro', markersize=4)
+    plt.plot(green_x, green_y, 'go', markersize=4)
+
+    # Iterate over red and green light coordinates, crop the lights and save them
+    for i, (x, y) in enumerate(zip(red_x, red_y)):
+        cropped_image = crop_traffic_light(c_image, x, y, 'red')
+        save_image(cropped_image, f'traffic_lights/red_light_{i}_{timestamp}.png')
+
+    for i, (x, y) in enumerate(zip(green_x, green_y)):
+        cropped_image = crop_traffic_light(c_image, x, y, 'green')
+        save_image(cropped_image, f'traffic_lights/green_light_{i}_{timestamp}.png')
 
 
 def main(argv=None):
@@ -223,6 +374,7 @@ def main(argv=None):
 
     :param argv: In case you want to programmatically run this.
     """
+
     parser = argparse.ArgumentParser("Test TFL attention mechanism")
     parser.add_argument('-i', '--image', type=str, help='Path to an image')
     parser.add_argument("-j", "--json", type=str, help="Path to image json file -> GT for comparison")
