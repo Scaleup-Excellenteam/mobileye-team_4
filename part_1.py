@@ -1,20 +1,20 @@
 import os
-from typing import List, Optional, Union, Dict, Tuple
+from typing import List, Optional, Union, Dict, Tuple, Any
 import json
 import argparse
 from pathlib import Path
-
-import cv2
+import pandas as pd
 import numpy as np
-from scipy.ndimage import gaussian_filter, maximum_filter
+from scipy.ndimage import maximum_filter
 from scipy.signal import convolve
 from PIL import Image
+import cv2
 import matplotlib.pyplot as plt
 from sklearn.cluster import DBSCAN
 from datetime import datetime
 
 # if you wanna iterate over multiple files and json, the default source folder name is this.
-DEFAULT_BASE_DIR: str = 'INSERT_YOUR_DIR_WITH_PNG_AND_JSON_HERE'
+DEFAULT_BASE_DIR: str = 'images'
 
 # The label we wanna look for in the polygons json file
 TFL_LABEL = ['traffic light']
@@ -24,6 +24,31 @@ RED_X_COORDINATES = List[int]
 RED_Y_COORDINATES = List[int]
 GREEN_X_COORDINATES = List[int]
 GREEN_Y_COORDINATES = List[int]
+
+SEQ: str = 'seq'  # The image seq number -> for tracing back the original image
+IS_TRUE: str = 'is_true'  # Is it a traffic light or not.
+IGNOR: str = 'is_ignore'  # If it's an unusual crop (like two tfl's or only half etc.) that you can just ignore it and
+# investigate the reason after
+CROP_PATH: str = 'path'
+X0: str = 'x0'  # The bigger x value (the right corner)
+X1: str = 'x1'  # The smaller x value (the left corner)
+Y0: str = 'y0'  # The smaller y value (the lower corner)
+Y1: str = 'y1'  # The bigger y value (the higher corner)
+COL: str = 'col'
+SEQ_IMAG: str = 'seq_imag'  # Serial number of the image
+GTIM_PATH: str = 'gtim_path'
+X: str = 'x'
+Y: str = 'y'
+COLOR: str = 'color'
+CROP_RESULT: List[str] = [SEQ, IS_TRUE, IGNOR, CROP_PATH, X0, X1, Y0, Y1, COL]
+
+# Files path
+BASE_SNC_DIR: Path = Path.cwd().parent
+DATA_DIR: Path = (BASE_SNC_DIR / 'data')
+CROP_DIR: Path = DATA_DIR / 'crops'
+ATTENTION_PATH: Path = DATA_DIR / 'attention_results'
+
+CROP_CSV_NAME: str = 'crop_results.csv'  # result CSV name
 
 
 def create_color_masks(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -287,29 +312,6 @@ def adjust_boundary(image: np.ndarray, x: int, y: int, color: str, width: int = 
     return top_left_x, top_left_y, bottom_right_x, bottom_right_y
 
 
-def crop_traffic_light(image: np.ndarray, x: int, y: int, color: str, width: int = 20, height: int = 40) -> np.ndarray:
-    """
-    Crop the detected traffic light from the image.
-
-    Args:
-        image (np.ndarray): The input image as a NumPy array.
-        x, y: The x and y coordinates of the detected traffic light.
-        color (str): The color of the traffic light ('red' or 'green').
-        width (int): The width of the rectangle.
-        height (int): The height of the rectangle.
-
-    Returns:
-        np.ndarray: The cropped image.
-    """
-    # Get adjusted coordinates for cropping
-    top_left_x, top_left_y, bottom_right_x, bottom_right_y = adjust_boundary(image, x, y, color, width, height)
-
-    # Crop the rectangle
-    cropped_image = image[top_left_y:bottom_right_y, top_left_x:bottom_right_x]
-
-    return cropped_image
-
-
 def save_image(image: np.ndarray, output_path: str):
     """
     Save the given image to the specified path.
@@ -323,12 +325,135 @@ def save_image(image: np.ndarray, output_path: str):
         # Ensure the directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         # Save the image
-        cv2.imwrite(output_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(str(output_path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+
+
+def make_crop(image: np.ndarray, x: int, y: int, color: str, width: int = 20, height: int = 40) -> Tuple:
+    """
+    Create a crop around the traffic light in the image.
+
+    Args:
+        image (np.ndarray): The input image as a NumPy array.
+        x, y: The x and y coordinates of the detected traffic light.
+        color (str): The color of the traffic light ('red' or 'green').
+        width (int): The width of the rectangle.
+        height (int): The height of the rectangle.
+
+    Returns:
+        Tuple: The coordinates of the crop and the cropped image.
+    """
+    # Get adjusted coordinates for cropping
+    x0, y0, x1, y1 = adjust_boundary(image, x, y, color, width, height)
+
+    # Crop the rectangle
+    cropped_image = image[y0:y1, x0:x1]
+
+    return x0, y0, x1, y1, cropped_image
+
+
+def check_crop(image_json_path: str, x0: int, y0: int, x1: int, y1: int, color: str) -> Tuple[bool, bool]:
+    """
+    Check if the crop contains a traffic light based on the ground truth.
+
+    Args:
+        image_json_path (str): The path to the image's JSON file.
+        x0, y0, x1, y1: The coordinates of the crop.
+        color (str): The color of the traffic light.
+
+    Returns:
+        Tuple[bool, bool]: Whether the crop contains a traffic light and whether it should be ignored.
+    """
+    # Load the image's JSON file
+    image_json = json.load(Path(image_json_path).open())
+
+    # Iterate over the objects in the JSON file
+    for image_object in image_json['objects']:
+        if image_object['label'] == 'traffic light':
+            # Check if the traffic light's coordinates are within the crop's coordinates
+            for x, y in image_object['polygon']:
+                if x0 <= x <= x1 and y0 <= y <= y1:
+                    # The crop contains a traffic light
+                    return True, False
+
+    # The crop does not contain a traffic light
+    return False, True
+
+
+def save_for_part_2(crops_df: pd.DataFrame):
+    """
+    *** No need to touch this. ***
+    Saves the result DataFrame containing the crops data in the relevant folder under the relevant name for part 2.
+    """
+    if not ATTENTION_PATH.exists():
+        ATTENTION_PATH.mkdir()
+    crops_sorted: pd.DataFrame = crops_df.sort_values(by=SEQ)
+    crops_sorted.to_csv(ATTENTION_PATH / CROP_CSV_NAME, index=False)
+
+
+def create_crops(image: np.ndarray, red_x: List[int], red_y: List[int], green_x: List[int],
+                 green_y: List[int], image_json_path: Optional[str] = None, width: int = 20,
+                 height: int = 40) -> pd.DataFrame:
+    """
+    Create crops around the detected traffic lights in the image.
+
+    Args:
+        image (np.ndarray): The input image as a NumPy array.
+        red_x, red_y: The x and y coordinates of the detected red traffic lights.
+        green_x, green_y: The x and y coordinates of the detected green traffic lights.
+        image_json_path (str): The path to the image's JSON file.
+        width (int): The width of the rectangle.
+        height (int): The height of the rectangle.
+
+    Returns:
+        DataFrame: The DataFrame containing the information about the crops.
+    """
+    # Initialize the result DataFrame
+    result_df = pd.DataFrame(columns=CROP_RESULT)
+
+    # Initialize the template for the result
+    result_template: Dict[str, Any] = {SEQ: '', IS_TRUE: '', IGNOR: '', CROP_PATH: '', X0: '', X1: '', Y0: '', Y1: '',
+                                       COL: ''}
+
+    # Create crops for red traffic lights
+    for i, (x, y) in enumerate(zip(red_x, red_y)):
+        result_template[SEQ] = i
+        result_template[COL] = 'red'
+
+        x0, y0, x1, y1, cropped_image = make_crop(image, x, y, 'red', width, height)
+        result_template[X0], result_template[X1], result_template[Y0], result_template[Y1] = x0, x1, y0, y1
+
+        crop_path = f'traffic_lights/red_light_{i}.png'
+        save_image(cropped_image, (CROP_DIR / crop_path).as_posix())
+        result_template[CROP_PATH] = crop_path
+
+        if image_json_path:
+            result_template[IS_TRUE], result_template[IGNOR] = check_crop(image_json_path, x0, y0, x1, y1, 'red')
+
+        result_df = result_df._append(result_template, ignore_index=True)
+
+    # Create crops for green traffic lights
+    for i, (x, y) in enumerate(zip(green_x, green_y)):
+        result_template[SEQ] = i
+        result_template[COL] = 'green'
+
+        x0, y0, x1, y1, cropped_image = make_crop(image, x, y, 'green', width, height)
+        result_template[X0], result_template[X1], result_template[Y0], result_template[Y1] = x0, x1, y0, y1
+
+        crop_path = f'traffic_lights/green_light_{i}.png'
+        save_image(cropped_image, CROP_DIR / crop_path)
+        result_template[CROP_PATH] = crop_path
+
+        if image_json_path:
+            result_template[IS_TRUE], result_template[IGNOR] = check_crop(image_json_path, x0, y0, x1, y1, 'green')
+
+        result_df = result_df._append(result_template, ignore_index=True)
+
+    return result_df
 
 
 def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None, fig_num=None):
     """
-    Run the attention code.
+    Run the traffic light detection code.
     """
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     # Using pillow to load the image
@@ -356,14 +481,11 @@ def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None,
     plt.plot(red_x, red_y, 'ro', markersize=4)
     plt.plot(green_x, green_y, 'go', markersize=4)
 
-    # Iterate over red and green light coordinates, crop the lights and save them
-    for i, (x, y) in enumerate(zip(red_x, red_y)):
-        cropped_image = crop_traffic_light(c_image, x, y, 'red')
-        save_image(cropped_image, f'traffic_lights/red_light_{i}_{timestamp}.png')
+    # Create crops and add them to the DataFrame
+    df = create_crops(c_image, red_x, red_y, green_x, green_y, image_json_path)
 
-    for i, (x, y) in enumerate(zip(green_x, green_y)):
-        cropped_image = crop_traffic_light(c_image, x, y, 'green')
-        save_image(cropped_image, f'traffic_lights/green_light_{i}_{timestamp}.png')
+    # Save the DataFrame for part 2
+    save_for_part_2(df)
 
 
 def main(argv=None):
