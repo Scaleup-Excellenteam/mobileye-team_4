@@ -10,6 +10,7 @@ from scipy.ndimage import gaussian_filter, maximum_filter
 from scipy.signal import convolve
 from PIL import Image
 import matplotlib.pyplot as plt
+from scipy.spatial.distance import cdist, pdist
 from sklearn.cluster import DBSCAN
 from datetime import datetime
 
@@ -24,6 +25,26 @@ RED_X_COORDINATES = List[int]
 RED_Y_COORDINATES = List[int]
 GREEN_X_COORDINATES = List[int]
 GREEN_Y_COORDINATES = List[int]
+
+
+def display_pictures(c_image: np.ndarray, preprocessed_image: np.ndarray):
+    # Display the original and preprocessed images side by side
+    plt.figure(figsize=(10, 5))
+
+    # Plot the original image
+    plt.subplot(1, 2, 1)
+    plt.imshow(c_image)
+    plt.title('Original Image')
+    plt.axis('off')
+
+    # Plot the preprocessed image
+    plt.subplot(1, 2, 2)
+    plt.imshow(preprocessed_image)
+    plt.title('Preprocessed Image')
+    plt.axis('off')
+
+    plt.tight_layout()
+    plt.show()
 
 
 def create_color_masks(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -81,7 +102,7 @@ def high_pass_filter(image: np.ndarray, kernel_size: Tuple[int, int] = (11, 11),
     return high_pass.astype(np.float64)
 
 
-def filter_edge_points(x_coords, y_coords, width, height, margin=5):
+def filter_edge_points(x_coords, y_coords, width, height, diameters, margin=5):
     """
     Filter out the points near the edges of the image.
 
@@ -95,11 +116,13 @@ def filter_edge_points(x_coords, y_coords, width, height, margin=5):
     """
     filtered_x = []
     filtered_y = []
-    for x, y in zip(x_coords, y_coords):
+    filtered_diameters = []
+    for x, y, diameter in zip(x_coords, y_coords, diameters):
         if margin < x < width - margin and margin < y < height - margin:
             filtered_x.append(x)
             filtered_y.append(y)
-    return filtered_x, filtered_y
+            filtered_diameters.append(diameter)
+    return filtered_x, filtered_y, filtered_diameters
 
 
 # TFL detection function
@@ -149,6 +172,7 @@ def cluster_and_find_centroids(x_coords, y_coords, eps=5, min_samples=2):
 
     centroids_x = []
     centroids_y = []
+    diameters = []
 
     for cluster_label in set(labels):
         if cluster_label == -1:  # Ignore noise
@@ -160,7 +184,13 @@ def cluster_and_find_centroids(x_coords, y_coords, eps=5, min_samples=2):
         centroids_x.append(centroid_x)
         centroids_y.append(centroid_y)
 
-    return centroids_x, centroids_y
+        if len(cluster_points) > 1:
+            pairwise_distances = pdist(cluster_points)
+            # diameter = np.mean(pairwise_distances)
+            diameter = np.max(pairwise_distances)  # TODO
+            diameters.append(diameter)
+
+    return centroids_x, centroids_y, diameters  # , farthest_averages_x, farthest_averages_y
 
 
 def find_tfl_coordinates(color_mask):
@@ -175,12 +205,14 @@ def find_tfl_coordinates(color_mask):
     """
     filtered_mask = apply_filters_and_threshold(color_mask)
     y, x = np.nonzero(filtered_mask)
-    suppressed = cluster_and_find_centroids(x, y)
-    return suppressed
+    diameters = []
+    centroids_x, centroids_y, diameters = cluster_and_find_centroids(x, y)
+    return centroids_x, centroids_y, diameters
 
 
-def find_tfl_lights(c_image: np.ndarray, **kwargs) -> Tuple[
-    RED_X_COORDINATES, RED_Y_COORDINATES, GREEN_X_COORDINATES, GREEN_Y_COORDINATES]:
+def find_tfl_lights(c_image: np.ndarray, **kwargs):
+    # -> Tuple[
+    # RED_X_COORDINATES, RED_Y_COORDINATES, GREEN_X_COORDINATES, GREEN_Y_COORDINATES]:
     """
     Find traffic light coordinates in the given image.
 
@@ -191,14 +223,14 @@ def find_tfl_lights(c_image: np.ndarray, **kwargs) -> Tuple[
         Tuple: The x and y coordinates of the detected red and green traffic lights.
     """
     red_mask, green_mask = create_color_masks(c_image)
+    red_x, red_y, red_diameters = find_tfl_coordinates(red_mask)
+    green_x, green_y, green_diameters = find_tfl_coordinates(green_mask)
 
-    red_x, red_y = find_tfl_coordinates(red_mask)
-    green_x, green_y = find_tfl_coordinates(green_mask)
+    red_x, red_y, red_diameters = filter_edge_points(red_x, red_y, c_image.shape[1], c_image.shape[0], red_diameters)
+    green_x, green_y, green_diameters = filter_edge_points(green_x, green_y, c_image.shape[1], c_image.shape[0],
+                                                           green_diameters)
 
-    red_x, red_y = filter_edge_points(red_x, red_y, c_image.shape[1], c_image.shape[0])
-    green_x, green_y = filter_edge_points(green_x, green_y, c_image.shape[1], c_image.shape[0])
-
-    return list(red_x), list(red_y), list(green_x), list(green_y)
+    return list(red_x), list(red_y), list(green_x), list(green_y), list(red_diameters), list(green_diameters)
 
 
 def show_image_and_gt(c_image: np.ndarray, objects: Optional[List[POLYGON_OBJECT]], fig_num: int = None):
@@ -226,7 +258,8 @@ def show_image_and_gt(c_image: np.ndarray, objects: Optional[List[POLYGON_OBJECT
 
 
 def draw_traffic_light_rectangles(image: np.ndarray, red_x: List[int], red_y: List[int], green_x: List[int],
-                                  green_y: List[int], width: int = 20, height: int = 40) -> np.ndarray:
+                                  green_y: List[int], red_diameters: List[int], green_diameters: List[int],
+                                  width: int = 20, height: int = 40) -> np.ndarray:
     """
     Draw rectangles around the detected traffic lights.
 
@@ -244,18 +277,30 @@ def draw_traffic_light_rectangles(image: np.ndarray, red_x: List[int], red_y: Li
     image_with_rectangles = image.copy()
 
     # Draw rectangles for red lights (light at the top of the rectangle)
-    for x, y in zip(red_x, red_y):
-        top_left = (int(x - width // 2), int(y - height / 3))
-        bottom_right = (int(x + width // 2), int(y + height))
+    for x, y, diameter in zip(red_x, red_y, red_diameters):
+        top_left = (int(x - diameter / 2 - 5), int(y - diameter / 2 - 5))
+        bottom_right = (int(x + diameter / 2 + 5), int(y + 3 * diameter))
+        if not is_coord_in_boundary(top_left, image) or not is_coord_in_boundary(bottom_right, image):
+            continue
         cv2.rectangle(image_with_rectangles, top_left, bottom_right, (255, 55, 0), 2)
 
     # Draw rectangles for green lights (light at the bottom of the rectangle)
-    for x, y in zip(green_x, green_y):
-        top_left = (int(x - width // 2), int(y - height))
-        bottom_right = (int(x + width // 2), int(y + height / 3))
+    for x, y, diameter in zip(green_x, green_y, green_diameters):
+        top_left = (int(x - diameter / 2 - 5), int(y - 3 * diameter))
+        bottom_right = (int(x + diameter / 2 + 5), int(y + diameter / 2 + 5))
+        if not is_coord_in_boundary(top_left, image) or not is_coord_in_boundary(bottom_right, image):
+            continue
         cv2.rectangle(image_with_rectangles, top_left, bottom_right, (0, 181, 26), 2)
 
     return image_with_rectangles
+
+
+# image.shape
+# Out[2]: (1024, 2048, 3)
+def is_coord_in_boundary(coord: Tuple, image: np.ndarray):
+    x = coord[0]
+    y = coord[1]
+    return coord[0] > 0 and coord[0] < image.shape[1] and coord[1] > 0 and coord[1] < image.shape[0]
 
 
 def adjust_boundary(image: np.ndarray, x: int, y: int, color: str, width: int = 20, height: int = 40) -> Tuple:
@@ -344,10 +389,11 @@ def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None,
 
     show_image_and_gt(c_image, objects, fig_num)
 
-    red_x, red_y, green_x, green_y = find_tfl_lights(c_image)
+    red_x, red_y, green_x, green_y, red_diameters, green_diameters = find_tfl_lights(c_image)
 
-    # Draw rectangles around the detected traffic lights
-    c_image_with_rectangles = draw_traffic_light_rectangles(c_image, red_x, red_y, green_x, green_y)
+    # Draw rectangles around the detected traffic lights`
+    c_image_with_rectangles = draw_traffic_light_rectangles(c_image, red_x, red_y, green_x, green_y,
+                                                            red_diameters, green_diameters)
 
     # Display the image with rectangles
     plt.imshow(c_image_with_rectangles)
