@@ -414,37 +414,25 @@ def create_crops(image: np.ndarray, red_x: List[int], red_y: List[int], green_x:
     result_template: Dict[str, Any] = {SEQ: '', IS_TRUE: '', IGNOR: '', CROP_PATH: '', X0: '', X1: '', Y0: '', Y1: '',
                                        COL: ''}
 
-    # Create crops for red traffic lights
-    for i, (x, y) in enumerate(zip(red_x, red_y)):
-        result_template[SEQ] = i
-        result_template[COL] = 'red'
+    # Combine colors
+    colors = ['red'] * len(red_x) + ['green'] * len(green_x)
+    xs = red_x + green_x
+    ys = red_y + green_y
 
-        x0, y0, x1, y1, cropped_image = make_crop(image, x, y, 'red', width, height)
+    for i, (color, x, y) in enumerate(zip(colors, xs, ys)):
+        result_template[SEQ] = i
+        result_template[COL] = color
+
+        x0, y0, x1, y1, cropped_image = make_crop(image, x, y, color, width, height)
         result_template[X0], result_template[X1], result_template[Y0], result_template[Y1] = x0, x1, y0, y1
 
-        crop_path = f'traffic_lights/red_light_{i}.png'
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        crop_path = f'traffic_lights/{color}_light_{i}_{timestamp}.png'
         save_image(cropped_image, (CROP_DIR / crop_path).as_posix())
         result_template[CROP_PATH] = crop_path
 
         if image_json_path:
-            result_template[IS_TRUE], result_template[IGNOR] = check_crop(image_json_path, x0, y0, x1, y1, 'red')
-
-        result_df = result_df._append(result_template, ignore_index=True)
-
-    # Create crops for green traffic lights
-    for i, (x, y) in enumerate(zip(green_x, green_y)):
-        result_template[SEQ] = i
-        result_template[COL] = 'green'
-
-        x0, y0, x1, y1, cropped_image = make_crop(image, x, y, 'green', width, height)
-        result_template[X0], result_template[X1], result_template[Y0], result_template[Y1] = x0, x1, y0, y1
-
-        crop_path = f'traffic_lights/green_light_{i}.png'
-        save_image(cropped_image, CROP_DIR / crop_path)
-        result_template[CROP_PATH] = crop_path
-
-        if image_json_path:
-            result_template[IS_TRUE], result_template[IGNOR] = check_crop(image_json_path, x0, y0, x1, y1, 'green')
+            result_template[IS_TRUE], result_template[IGNOR] = check_crop(image_json_path, x0, y0, x1, y1, color)
 
         result_df = result_df._append(result_template, ignore_index=True)
 
