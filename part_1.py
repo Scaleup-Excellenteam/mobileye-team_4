@@ -423,7 +423,7 @@ def create_crops(image: np.ndarray,
         result_template[CROP_PATH] = crop_path
 
         if image_json_path:
-            result_template[IS_TRUE], result_template[IGNOR] = check_crop(image_json_path, *top_left, *bottom_right, color)
+            result_template[IS_TRUE], result_template[IGNOR] = check_crop(image_json_path, *top_left, *bottom_right)
 
         result_df = result_df._append(result_template, ignore_index=True)
 
