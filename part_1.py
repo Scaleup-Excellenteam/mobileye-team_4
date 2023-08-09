@@ -12,8 +12,15 @@ import cv2
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import pdist
 from sklearn.cluster import DBSCAN
-from datetime import datetime
+import logging
 
+logging.basicConfig(
+    filename='tfl.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s %(message)s',
+    datefmt='%d-%m-%Y %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 # if you wanna iterate over multiple files and json, the default source folder name is this.
 # DEFAULT_BASE_DIR: str = 'resources/darmstadt'
 DEFAULT_BASE_DIR: str = 'resources'
@@ -50,6 +57,7 @@ DATA_DIR: Path = (BASE_SNC_DIR / 'data')
 CROP_DIR: Path = DATA_DIR / 'crops'
 ATTENTION_PATH: Path = DATA_DIR / 'attention_results'
 RESIZED_DIR = CROP_DIR / 'resized'
+ORIGINAL_CROPS_DIR = CROP_DIR / 'original'
 
 CROP_CSV_NAME: str = 'crop_results.csv'  # result CSV name
 
@@ -360,25 +368,24 @@ def check_crop(image_json_path: str, x0: int, y0: int, x1: int, y1: int) -> Tupl
     # Load the image's JSON file
     image_json = json.load(Path(image_json_path).open())
 
-    # if the crop contains more than one traffic-light then ignore it.
-    # traffic_lights = sum(1 for image_object in image_json['objects'] if image_object['label'] == 'traffic light')
-    # if traffic_lights != 1:
-    #     return False, True
-
+    found_one = False
     # Iterate over the objects in the JSON file
     for image_object in image_json['objects']:
         if image_object['label'] == 'traffic light':
-            polygon_size = len(image_object['polygon'])
             # Check if the traffic light's coordinates are within the crop's coordinates
             contained_coords = sum(1 for x, y in image_object['polygon'] if x0 <= x <= x1 and y0 <= y <= y1)
-            # if half or more of the polygon is contained in the crop it's a traffic-light
-            if contained_coords >= 0.5 * polygon_size:
-                # The crop contains a traffic-light
-                return True, False
-
+            # if half or more of the polygon points are contained in the crop it's a traffic-light
+            polygon_size = len(image_object['polygon'])
+            if contained_coords >= 0.5 * polygon_size:  # The crop contains a traffic-light
+                if not found_one:
+                    found_one = True
+                else:  # more than one traffic-light in the crop so ignore
+                    return False, True
+    # found one traffic-light in the crop
+    if found_one:
+        return True, False
     # The crop does not contain a traffic-light
     return False, True
-
 
 def save_for_part_2(crops_df: pd.DataFrame):
     """
@@ -435,14 +442,18 @@ def create_crops(image: np.ndarray,
         result_template[X0], result_template[Y0] = top_left
         result_template[X1], result_template[Y1] = bottom_right
 
-        crop_path = f'original/{extract_filename(image_path)}_{i}.png'
-        save_image(cropped_image, (CROP_DIR / crop_path).as_posix())
+        crop_path = f'{ORIGINAL_CROPS_DIR}/{extract_filename(image_path)}_{i}.png'
+        save_image(cropped_image, (ORIGINAL_CROPS_DIR / crop_path).as_posix())
         result_template[CROP_PATH] = crop_path
 
         if image_json_path:
             result_template[IS_TRUE], result_template[IGNOR] = check_crop(image_json_path, *top_left, *bottom_right)
         else:
             result_template[IS_TRUE], result_template[IGNOR] = False, True
+
+        logger.info(f"{result_template[SEQ]} | {result_template[IS_TRUE]} | {result_template[IGNOR]} | "
+                    f"{result_template[CROP_PATH]} | {result_template[X0]} {result_template[X1]} {result_template[Y0]}"
+                    f" {result_template[Y1]} | {result_template[COL]}")
 
         result_df = result_df._append(result_template, ignore_index=True)
 
@@ -482,10 +493,12 @@ def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None,
 
     # Create crops and add them to the DataFrame
     try:
-        df = create_crops(c_image, red_rectangles, green_rectangles, image_path, image_json_path)
-        save_for_part_2(df)
+        return create_crops(c_image, red_rectangles, green_rectangles, image_path, image_json_path)
+        # save_for_part_2(df)
+
     except:
         print("An error occured")
+        return None
     # Save the DataFrame for part 2
 
 
@@ -497,6 +510,7 @@ def main(argv=None):
 
     :param argv: In case you want to programmatically run this.
     """
+    df = pd.DataFrame(columns=CROP_RESULT)
 
     parser = argparse.ArgumentParser("Test TFL attention mechanism")
     parser.add_argument('-i', '--image', type=str, help='Path to an image')
@@ -508,14 +522,16 @@ def main(argv=None):
     directory_path: Path = Path(args.dir or DEFAULT_BASE_DIR)
     if directory_path.exists():
         # gets a list of all the files in the directory that ends with "_leftImg8bit.png".
-        file_list: List[Path] = list(directory_path.glob('*_leftImg8bit.png'))
+        file_list: List[Path] = list(directory_path.rglob('*_leftImg8bit.png'))
 
         for image in file_list:
             # Convert the Path object to a string using as_posix() method
             image_path: str = image.as_posix()
             path: Optional[str] = image_path.replace('_leftImg8bit.png', '_gtFine_polygons.json')
             image_json_path: Optional[str] = path if Path(path).exists() else None
-            test_find_tfl_lights(image_path, image_json_path)
+            df = df._append(test_find_tfl_lights(image_path, image_json_path))
+
+        save_for_part_2(df)
 
     if args.image and args.json:
         test_find_tfl_lights(args.image, args.json)
