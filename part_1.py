@@ -22,7 +22,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 # if you wanna iterate over multiple files and json, the default source folder name is this.
-# DEFAULT_BASE_DIR: str = 'resources/darmstadt'
 DEFAULT_BASE_DIR: str = 'resources'
 
 # The label we wanna look for in the polygons json file
@@ -39,7 +38,6 @@ IS_TRUE: str = 'is_true'  # Is it a traffic light or not.
 IGNOR: str = 'is_ignore'  # If it's an unusual crop (like two tfl's or only half etc.) that you can just ignore it and
 # investigate the reason after
 CROP_PATH: str = 'path'
-PATH: str = 'path'
 X0: str = 'x0'  # The bigger x value (the right corner)
 X1: str = 'x1'  # The smaller x value (the left corner)
 Y0: str = 'y0'  # The smaller y value (the lower corner)
@@ -50,9 +48,9 @@ GTIM_PATH: str = 'gtim_path'
 X: str = 'x'
 Y: str = 'y'
 COLOR: str = 'color'
-ZOOM: str = 'zoom'
 CROP_RESULT: List[str] = [SEQ, IS_TRUE, IGNOR, CROP_PATH, X0, X1, Y0, Y1, COL]
-ATTENTION_RESULT: List[str] = [PATH, X, Y, ZOOM, COL]
+ZOOM: str = 'zoom'
+PATH: str = 'path'
 
 # Files path
 BASE_SNC_DIR: Path = Path.cwd().parent
@@ -61,14 +59,12 @@ CROP_DIR: Path = DATA_DIR / 'crops'
 ATTENTION_PATH: Path = DATA_DIR / 'attention_results'
 RESIZED_DIR = CROP_DIR / 'resized'
 ORIGINAL_CROPS_DIR = CROP_DIR / 'original'
-
 CROP_CSV_NAME: str = 'crop_results.csv'  # result CSV name
+ATTENTION_RESULT: List[str] = [PATH, X, Y, ZOOM, COL]
 
 RED_LIGHT = 'red'
 GREEN_LIGHT = 'green'
 TIMESTAMP_FORMAT = "%Y%m%d%H%M%S"
-
-crop_results_df = pd.DataFrame(columns=CROP_RESULT)
 
 
 def create_color_masks(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -429,7 +425,7 @@ def create_crops(image: np.ndarray,
         DataFrame: The DataFrame containing the information about the crops.
     """
     # Initialize the result DataFrame
-    # crop_results_df = pd.DataFrame(columns=CROP_RESULT)
+    result_df = pd.DataFrame(columns=CROP_RESULT)
 
     # Initialize the template for the result
     result_template: Dict[str, Any] = {SEQ: '', IS_TRUE: '', IGNOR: '', CROP_PATH: '', X0: '', X1: '', Y0: '', Y1: '',
@@ -460,30 +456,40 @@ def create_crops(image: np.ndarray,
         logger.info(f"{result_template[SEQ]} | {result_template[IS_TRUE]} | {result_template[IGNOR]} | "
                     f"{result_template[CROP_PATH]} | {result_template[X0]} {result_template[X1]} {result_template[Y0]}"
                     f" {result_template[Y1]} | {result_template[COL]}")
-        try:
-            crop_results_df = crop_results_df._append(result_template, ignore_index=True)
-        except:
-            print("cannot append crop res")
-    # return crop_results_df
+
+        result_df = result_df._append(result_template, ignore_index=True)
+
+    return result_df
 
 
-def get_attention_row(image_path, x_coords, y_coords, color):
-    image_attention = pd.DataFrame(columns=ATTENTION_RESULT)
-    for (x, y) in zip(x_coords, y_coords):
-        image_attention[PATH] = extract_filename(image_path)
-        image_attention[X] = x
-        image_attention[Y] = y
-        image_attention[COL] = color
-        image_attention = image_attention._append(image_attention, ignore_index=True)
-    return image_attention
+def save_attention_data(image_path: str, red_x: List[int], red_y: List[int], green_x: List[int],
+                        green_y: List[int]) -> pd.DataFrame:
+    """
+    Saves the detected traffic light coordinates to a DataFrame.
+
+    Args:
+        image_path (str): The path to the image file.
+        red_x, red_y: X and Y coordinates for detected red traffic lights.
+        green_x, green_y: X and Y coordinates for detected green traffic lights.
+
+    Returns:
+        DataFrame: The DataFrame containing the information about the detected traffic lights.
+    """
+    data = []
+    for x, y in zip(red_x, red_y):
+        data.append([image_path, x, y, 0, RED_LIGHT])
+
+    for x, y in zip(green_x, green_y):
+        data.append([image_path, x, y, 0, GREEN_LIGHT])
+
+    df = pd.DataFrame(data, columns=ATTENTION_RESULT)
+    return df
 
 
 def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None, fig_num=None):
     """
     Run the traffic light detection code.
     """
-    image_attention = pd.DataFrame(columns=ATTENTION_RESULT)
-
     # Using pillow to load the image
     image: Image = Image.open(image_path)
     # Converting the image to a numpy ndarray array
@@ -495,11 +501,9 @@ def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None,
         objects: List[POLYGON_OBJECT] = [image_object for image_object in image_json['objects']
                                          if image_object['label'] in TFL_LABEL]
 
-    # show_image_and_gt(c_image, objects, fig_num)
+    show_image_and_gt(c_image, objects, fig_num)
 
     red_x, red_y, green_x, green_y, red_diameters, green_diameters = find_tfl_lights(c_image)
-    image_attention = image_attention._append(get_attention_row(image_path, red_x, red_y, RED_LIGHT))
-    image_attention = image_attention._append(get_attention_row(image_path, green_x, green_y, GREEN_LIGHT))
 
     # Draw rectangles around the detected traffic lights
     c_image_with_rectangles, red_rectangles, green_rectangles = draw_traffic_light_rectangles(c_image, red_x, red_y,
@@ -507,20 +511,19 @@ def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None,
                                                                                               red_diameters,
                                                                                               green_diameters)
     # # Display the image with rectangles
-    # plt.imshow(c_image_with_rectangles)
+    plt.imshow(c_image_with_rectangles)
     #
     # # 'ro': This specifies the format string. 'r' represents the color red, and 'o' represents circles as markers.
-    # plt.plot(red_x, red_y, 'ro', markersize=4)
-    # plt.plot(green_x, green_y, 'go', markersize=4)
+    plt.plot(red_x, red_y, 'ro', markersize=4)
+    plt.plot(green_x, green_y, 'go', markersize=4)
+
+    # Save the detected traffic lights to attention_data.csv
+
+    attention_df = save_attention_data(image_path.split("/")[-1], red_x, red_y, green_x, green_y)
+    attention_df.to_csv(ATTENTION_PATH / 'attention_results.csv', mode='a', header=False, index=False)
 
     # Create crops and add them to the DataFrame
-    try:
-        create_crops(c_image, red_rectangles, green_rectangles, image_path, image_json_path), image_attention
-
-    except:
-        print("An error occured")
-        return None
-    # Save the DataFrame for part 2
+    return create_crops(c_image, red_rectangles, green_rectangles, image_path, image_json_path)
 
 
 def main(argv=None):
@@ -531,14 +534,21 @@ def main(argv=None):
 
     :param argv: In case you want to programmatically run this.
     """
-    # crop_results_df = pd.DataFrame(columns=CROP_RESULT)
-    attention_results_df = pd.DataFrame(columns=ATTENTION_RESULT)
+    df = pd.DataFrame(columns=CROP_RESULT)
 
     parser = argparse.ArgumentParser("Test TFL attention mechanism")
     parser.add_argument('-i', '--image', type=str, help='Path to an image')
     parser.add_argument("-j", "--json", type=str, help="Path to image json file -> GT for comparison")
     parser.add_argument('-d', '--dir', type=str, help='Directory to scan images in')
     args = parser.parse_args(argv)
+
+    # Check if attention_data.csv exists, if not, initialize it with headers
+    attention_data_path = ATTENTION_PATH / 'attention_results.csv'
+    if not attention_data_path.exists():
+        # Ensure the directory exists
+        ATTENTION_PATH.mkdir(parents=True, exist_ok=True)
+        with open(attention_data_path, 'w') as f:
+            f.write('path,x,y,col\n')
 
     # If you entered a custom dir to run from or the default dir exist in your project then:
     directory_path: Path = Path(args.dir or DEFAULT_BASE_DIR)
@@ -551,9 +561,10 @@ def main(argv=None):
             image_path: str = image.as_posix()
             path: Optional[str] = image_path.replace('_leftImg8bit.png', '_gtFine_polygons.json')
             image_json_path: Optional[str] = path if Path(path).exists() else None
-            test_find_tfl_lights(image_path, image_json_path)
-            # attention_results_df = attention_results_df._append()
-        save_for_part_2(crop_results_df)
+            df = df._append(test_find_tfl_lights(image_path, image_json_path))
+
+        # Save the DataFrame for part 2
+        save_for_part_2(df)
 
     if args.image and args.json:
         test_find_tfl_lights(args.image, args.json)
