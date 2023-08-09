@@ -359,22 +359,22 @@ def check_crop(image_json_path: str, x0: int, y0: int, x1: int, y1: int) -> Tupl
     # Load the image's JSON file
     image_json = json.load(Path(image_json_path).open())
 
-    # if the crop contains more than one traffic-light then ignore it.
-    traffic_lights = sum(1 for image_object in image_json['objects'] if image_object['label'] == 'traffic light')
-    if traffic_lights != 1:
-        return False, True
-
+    found_one = False
     # Iterate over the objects in the JSON file
     for image_object in image_json['objects']:
         if image_object['label'] == 'traffic light':
-            polygon_size = len(image_object['polygon'])
             # Check if the traffic light's coordinates are within the crop's coordinates
             contained_coords = sum(1 for x, y in image_object['polygon'] if x0 <= x <= x1 and y0 <= y <= y1)
-            # if half or more of the polygon is contained in the crop it's a traffic-light
-            if contained_coords >= 0.5 * polygon_size:
-                # The crop contains a traffic-light
-                return True, False
-
+            # if half or more of the polygon points are contained in the crop it's a traffic-light
+            polygon_size = len(image_object['polygon'])
+            if contained_coords >= 0.5 * polygon_size:  # The crop contains a traffic-light
+                if not found_one:
+                    found_one = True
+                else:  # more than one traffic-light in the crop so ignore
+                    return False, True
+    # found one traffic-light in the crop
+    if found_one:
+        return True, False
     # The crop does not contain a traffic-light
     return False, True
 
@@ -466,11 +466,11 @@ def test_find_tfl_lights(image_path: str, image_json_path: Optional[str] = None,
                                                                                               red_diameters,
                                                                                               green_diameters)
     # Display the image with rectangles
-    plt.imshow(c_image_with_rectangles)
+    # plt.imshow(c_image_with_rectangles)
 
     # 'ro': This specifies the format string. 'r' represents the color red, and 'o' represents circles as markers.
-    plt.plot(red_x, red_y, 'ro', markersize=4)
-    plt.plot(green_x, green_y, 'go', markersize=4)
+    # plt.plot(red_x, red_y, 'ro', markersize=4)
+    # plt.plot(green_x, green_y, 'go', markersize=4)
 
     # Create crops and add them to the DataFrame
     df = create_crops(c_image, red_rectangles, green_rectangles, image_json_path)
